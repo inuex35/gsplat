@@ -56,7 +56,8 @@ class Config:
     render_traj_path: str = "interp"
 
     # Path to the Mip-NeRF 360 dataset
-    data_dir: str = "data_dir"
+    data_dir: str = "/workspace/sample"
+    depth_dir: str = "depth"
     # Downsample factor for the dataset
     data_factor: int = 4
     # Directory to save results
@@ -83,9 +84,9 @@ class Config:
     # Number of training steps
     max_steps: int = 30_000
     # Steps to evaluate the model
-    eval_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
+    eval_steps: List[int] = field(default_factory=lambda: [3_000, 7_000, 30_000])
     # Steps to save the model
-    save_steps: List[int] = field(default_factory=lambda: [7_000, 30_000])
+    save_steps: List[int] = field(default_factory=lambda: [3_000, 7_000, 30_000])
 
     # Initialization strategy
     init_type: str = "sfm"
@@ -154,7 +155,7 @@ class Config:
     bilateral_grid_shape: Tuple[int, int, int] = (16, 16, 8)
 
     # Enable depth loss. (experimental)
-    depth_loss: bool = False
+    depth_loss: bool = True
     # Weight for depth loss
     depth_lambda: float = 1e-2
 
@@ -302,13 +303,15 @@ class Runner:
         self.parser = Parser(
             data_dir=cfg.data_dir,
             factor=cfg.data_factor,
-            normalize=cfg.normalize_world_space
+            normalize=cfg.normalize_world_space,
+            depth_path=cfg.depth_dir,
         )
         self.trainset = Dataset(
             self.parser,
             split="train",
             patch_size=cfg.patch_size,
             load_depths=cfg.depth_loss,
+            depth_path=cfg.depth_dir,
         )
         self.valset = Dataset(self.parser, split="val")
         self.scene_scale = self.parser.scene_scale * 1.1 * cfg.global_scale
@@ -573,8 +576,7 @@ class Runner:
             image_ids = data["image_id"].to(device)
             masks = data["mask"].to(device) if "mask" in data else None  # [1, H, W]
             if cfg.depth_loss:
-                points = data["points"].to(device)  # [1, M, 2]
-                depths_gt = data["depths"].to(device)  # [1, M]
+                depths_gt = data["depth_image"].to(device)  # [B, H, W]
 
             height, width = pixels.shape[1:3]
 
@@ -633,18 +635,7 @@ class Runner:
             )
             loss = l1loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda
             if cfg.depth_loss:
-                # query depths from depth map
-                points = torch.stack(
-                    [
-                        points[:, :, 0] / (width - 1) * 2 - 1,
-                        points[:, :, 1] / (height - 1) * 2 - 1,
-                    ],
-                    dim=-1,
-                )  # normalize to [-1, 1]
-                grid = points.unsqueeze(2)  # [1, M, 1, 2]
-                depths = F.grid_sample(
-                    depths.permute(0, 3, 1, 2), grid, align_corners=True
-                )  # [1, 1, M, 1]
+
                 depths = depths.squeeze(3).squeeze(1)  # [1, M]
                 # calculate loss in disparity space
                 disp = torch.where(depths > 0.0, 1.0 / depths, torch.zeros_like(depths))

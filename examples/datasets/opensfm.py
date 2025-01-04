@@ -125,11 +125,13 @@ class Parser:
         factor: int = 1,
         normalize: bool = False,
         test_every: int = 8,
+        depth_path: str = None,
     ):
         self.data_dir = data_dir
         self.factor = factor
         self.normalize = normalize
         self.test_every = test_every
+        self.depth_path = depth_path
 
         # Extract data from reconstructions.
 
@@ -318,11 +320,13 @@ class Dataset:
         split: str = "train",
         patch_size: Optional[int] = None,
         load_depths: bool = False,
+        depth_path: str = None,
     ):
         self.parser = parser
         self.split = split
         self.patch_size = patch_size
         self.load_depths = load_depths
+        self.depth_path = depth_path
         indices = np.arange(len(self.parser.images))  # Use images from parser
         if split == "train":
             self.indices = indices[indices % self.parser.test_every != 0]
@@ -338,7 +342,7 @@ class Dataset:
         img_name = self.parser.images[index].name
         camera_id = img.camera_id
         K = self.parser.Ks_dict[camera_id].copy()  # undistorted K
-        camtoworld = self.parser.camtoworlds[index]
+        camtoworlds = self.parser.camtoworlds[index]
 
         image = imageio.imread(self.parser.image_paths[index])[..., :3]
 
@@ -369,17 +373,132 @@ class Dataset:
 
         data = {
             "K": torch.from_numpy(K).float(),
-            "camtoworld": torch.from_numpy(camtoworld).float(),
+            "camtoworld": torch.from_numpy(camtoworlds).float(),
             "image": torch.from_numpy(image).float(),
             "image_id": item,  # the index of the image in the dataset
         }
 
         if self.load_depths:
-            # Load depth data (dummy implementation, replace with actual depth loading logic if available)
-            depths = np.zeros((image.shape[0], image.shape[1]), dtype=np.float32)  # Placeholder for actual depth loading
+            # Projected points to image plane to get depths
+            worldtocams = np.linalg.inv(camtoworlds)
+            point_indices = self.parser.point_indices[img_name]
+            points_world = self.parser.points[point_indices]
+            points_cam = (worldtocams[:3, :3] @ points_world.T + worldtocams[:3, 3:4]).T
+            points_proj = (K @ points_cam.T).T
+            points = points_proj[:, :2] / points_proj[:, 2:3]  # (M, 2)
+            depths = points_cam[:, 2]  # (M,)
+            # Filter out points outside the image
+            selector = (
+                (points[:, 0] >= 0)
+                & (points[:, 0] < image.shape[1])
+                & (points[:, 1] >= 0)
+                & (points[:, 1] < image.shape[0])
+                & (depths > 0)
+            )
+            points = points[selector]
+            depths = depths[selector]
+            data["points"] = torch.from_numpy(points).float()
             data["depths"] = torch.from_numpy(depths).float()
 
+        if self.parser.depth_path:
+            img_name = img_name.split(".")[0]
+            depth_path = os.path.join(self.parser.data_dir, self.parser.depth_path, f"{img_name}.png")
+            if os.path.exists(depth_path):
+                # Load depth image as a numpy array from a PNG file
+                depth_image = imageio.imread(depth_path).astype(np.float32)
+
+                # Resize depth image according to the factor
+                if self.parser.factor > 1:
+                    depth_image = cv2.resize(depth_image, new_size, interpolation=cv2.INTER_NEAREST)
+                
+                # Convert to torch tensor
+                depth_image = torch.from_numpy(depth_image).float()
+                
+                # Align depth_image and depths
+                aligned_depth_image = align_depths(depth_image, points, depths)
+                data["depth_image"] = aligned_depth_image
+                
+                # Save aligned depth image for debug
+                #debug_save_path = f"/source/gsplat/aligned_depth_image_{item}.png"
+                #imageio.imwrite(debug_save_path, aligned_depth_image.numpy().astype(np.uint16))
+
+
         return data
+
+def compute_scale_and_shift(dense_depths: torch.Tensor, sparse_depths: torch.Tensor) -> (float, float):
+    """
+    Compute scale and shift for alignment using least-squares.
+
+    Args:
+        dense_depths (torch.Tensor): Sampled dense depths.
+        sparse_depths (torch.Tensor): Sparse depths.
+
+    Returns:
+        float, float: Scale and shift factors.
+    """
+    # Prepare the matrix A and vector b
+    A = torch.stack([dense_depths, torch.ones_like(dense_depths)], dim=1)  # Shape: (N, 2)
+    b = sparse_depths.unsqueeze(-1)  # Shape: (N, 1)
+
+    # Ensure both tensors have the same dtype
+    A = A.to(dtype=torch.float32)
+    b = b.to(dtype=torch.float32)
+
+    # Use torch.linalg.lstsq to solve the least squares problem
+    result = torch.linalg.lstsq(A, b)
+    x = result.solution  # Shape: (2, 1)
+
+    # Extract scale and shift from the solution
+    scale = x[0, 0].item()
+    shift = x[1, 0].item()
+
+    return scale, shift
+
+
+def align_depths(depth_image: torch.Tensor, points: np.ndarray, depths: np.ndarray) -> torch.Tensor:
+    """
+    Aligns dense depth map with sparse depths by scaling and shifting.
+
+    Args:
+        depth_image (torch.Tensor): Dense depth map (H, W).
+        points (np.ndarray): 2D projected points (N, 2).
+        depths (np.ndarray): Sparse depths (N,).
+
+    Returns:
+        torch.Tensor: Aligned dense depth map (H, W).
+    """
+    H, W = depth_image.shape
+
+    # Convert points and depths to torch tensors
+    points = torch.from_numpy(points)
+    depths = torch.from_numpy(depths)
+
+    # Round points to nearest integer indices for sampling
+    pixel_indices = points.long()
+
+    # Ensure points are within bounds
+    valid_mask = (
+        (pixel_indices[:, 0] >= 0) & (pixel_indices[:, 0] < W) &
+        (pixel_indices[:, 1] >= 0) & (pixel_indices[:, 1] < H)
+    )
+    pixel_indices = pixel_indices[valid_mask]
+    depths = depths[valid_mask]
+
+    # Sample depths from dense depth map
+    sampled_dense_depths = depth_image[pixel_indices[:, 1], pixel_indices[:, 0]]
+
+    # Further filter valid depths (non-zero)
+    valid_depth_mask = sampled_dense_depths > 0
+    sampled_dense_depths = sampled_dense_depths[valid_depth_mask]
+    sparse_depths = depths[valid_depth_mask]
+
+    # Align using closed-form solution
+    scale, shift = compute_scale_and_shift(sampled_dense_depths, sparse_depths)
+
+    # Apply scale and shift to align the depth map
+    aligned_depth_image = scale * depth_image + shift
+
+    return aligned_depth_image
 
 def read_opensfm(reconstructions):
     """Extracts camera and image information from OpenSfM reconstructions."""
