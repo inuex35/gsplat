@@ -400,12 +400,12 @@ class Dataset:
             data["points"] = torch.from_numpy(points).float()
             data["depths"] = torch.from_numpy(depths).float()
 
-        if self.parser.depth_path:
-            img_name = img_name.split(".")[0]
-            depth_path = os.path.join(self.parser.data_dir, self.parser.depth_path, f"{img_name}.png")
-            if os.path.exists(depth_path):
-                # Load depth image as a numpy array from a PNG file
-                depth_image = imageio.imread(depth_path).astype(np.float32)
+            if self.parser.depth_path is not None:
+                img_name = img_name.split(".")[0]
+                depth_path = os.path.join(self.parser.data_dir, self.parser.depth_path, f"{img_name}.png")
+                if os.path.exists(depth_path):
+                    # Load depth image as a numpy array from a PNG file
+                    depth_image = imageio.imread(depth_path).astype(np.float32)
 
                 # Resize depth image according to the factor
                 if self.parser.factor > 1:

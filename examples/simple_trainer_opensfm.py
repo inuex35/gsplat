@@ -84,9 +84,9 @@ class Config:
     # Number of training steps
     max_steps: int = 30_000
     # Steps to evaluate the model
-    eval_steps: List[int] = field(default_factory=lambda: [3_000, 7_000, 30_000])
+    eval_steps: List[int] = field(default_factory=lambda: [1_000, 7_000, 30_000])
     # Steps to save the model
-    save_steps: List[int] = field(default_factory=lambda: [3_000, 7_000, 30_000])
+    save_steps: List[int] = field(default_factory=lambda: [1_000, 7_000, 30_000])
 
     # Initialization strategy
     init_type: str = "sfm"
@@ -108,7 +108,7 @@ class Config:
     # Near plane clipping distance
     near_plane: float = 0.01
     # Far plane clipping distance
-    far_plane: float = 1e8
+    far_plane: float = 100.0
 
     # Strategy for GS densification
     strategy: Union[DefaultStrategy, MCMCStrategy] = field(
@@ -639,7 +639,7 @@ class Runner:
                 depths = depths.squeeze(3).squeeze(1)  # [1, M]
                 # calculate loss in disparity space
                 disp = torch.where(depths > 0.0, 1.0 / depths, torch.zeros_like(depths))
-                disp_gt = 1.0 / depths_gt  # [1, M]
+                disp_gt = torch.where((depths_gt > 0.0) & (depths_gt < 100), 1.0 / depths_gt, torch.zeros_like(depths_gt))
                 depthloss = F.l1_loss(disp, disp_gt) * self.scene_scale
                 loss += depthloss * cfg.depth_lambda
             if cfg.use_bilateral_grid:
@@ -834,7 +834,7 @@ class Runner:
 
             torch.cuda.synchronize()
             tic = time.time()
-            colors, _, _ = self.rasterize_splats(
+            renders, alphas, _ = self.rasterize_splats(
                 camtoworlds=camtoworlds,
                 Ks=Ks,
                 width=width,
@@ -843,7 +843,13 @@ class Runner:
                 near_plane=cfg.near_plane,
                 far_plane=cfg.far_plane,
                 masks=masks,
+                render_mode="RGB+ED",
             )  # [1, H, W, 3]
+            colors = torch.clamp(renders[..., 0:3], 0.0, 1.0)  # [1, H, W, 3]
+            depths = renders[..., 3:4]  # [1, H, W, 1]
+            depths = (depths - depths.min()) / (depths.max() - depths.min())
+            canvas_list = [colors, depths.repeat(1, 1, 1, 3)]
+
             torch.cuda.synchronize()
             ellipse_time += time.time() - tic
 
@@ -857,6 +863,20 @@ class Runner:
                 imageio.imwrite(
                     f"{self.render_dir}/{stage}_step{step}_{i:04d}.png",
                     canvas,
+                )
+
+                # write median depths
+                render_median = (depths - depths.min()) / (
+                    depths.max() - depths.min()
+                )
+                # render_median = render_median.detach().cpu().squeeze(0).unsqueeze(-1).repeat(1, 1, 3).numpy()
+                render_median = (
+                    render_median.detach().cpu().squeeze(0).repeat(1, 1, 3).numpy()
+                )
+
+                imageio.imwrite(
+                    f"{self.render_dir}/val_{i:04d}_median_depth_{step}.png",
+                    (render_median * 255).astype(np.uint8),
                 )
 
                 pixels_p = pixels.permute(0, 3, 1, 2)  # [1, 3, H, W]
