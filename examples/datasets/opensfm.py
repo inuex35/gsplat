@@ -416,6 +416,10 @@ class Dataset:
                 
                 # Align depth_image and depths
                 aligned_depth_image = align_depths(depth_image, points, depths)
+
+                x, y, w, h = self.parser.roi_undist_dict[camera_id]
+                aligned_depth_image = aligned_depth_image[y : y + h, x : x + w]
+
                 data["depth_image"] = aligned_depth_image
                 
                 # Save aligned depth image for debug
