@@ -126,18 +126,23 @@ class Parser:
         normalize: bool = False,
         test_every: int = 8,
         depth_path: str = None,
+        mask_path: str = None,
     ):
         self.data_dir = data_dir
         self.factor = factor
         self.normalize = normalize
         self.test_every = test_every
         self.depth_path = depth_path
+        self.mask_path = mask_path
 
         # Extract data from reconstructions.
 
         reconstructions = self.load_reconstructions(data_dir)
 
         self._parse_reconstructions(reconstructions)
+
+        if mask_path is not None:
+            self._load_masks()
 
     def _parse_reconstructions(self, reconstructions: List[Dict]):
         """Parse reconstructions data to extract camera information, extrinsics, and 3D points."""
@@ -311,6 +316,15 @@ class Parser:
             reconstructions = json.load(f)
         return reconstructions
 
+    def _load_masks(self):
+        self.image_masks = {}
+        for image_name in self.image_names:
+            mask_path = os.path.join(self.mask_path, f"{image_name}.png")  # マスクファイル名は画像名と対応
+            if os.path.exists(mask_path):
+                self.image_masks[image_name] = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+            else:
+                self.image_masks[image_name] = None
+
 class Dataset:
     """A simple dataset class for OpensfmLoaderParser."""
 
@@ -351,6 +365,11 @@ class Dataset:
             new_size = (image.shape[1] // self.parser.factor, image.shape[0] // self.parser.factor)
             image = cv2.resize(image, new_size, interpolation=cv2.INTER_AREA)
 
+        mask = self.parser.image_masks.get(img_name, None)
+        if mask is not None:
+            mask_resized = cv2.resize(mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
+            image[mask_resized == 0] = 0  # マスクが0の領域を黒にする
+
         # Undistort if necessary
         params = self.parser.params_dict[camera_id]
         if len(params) > 0:
@@ -359,8 +378,8 @@ class Dataset:
                 self.parser.mapy_dict[camera_id],
             )
             image = cv2.remap(image, mapx, mapy, cv2.INTER_LINEAR)
-            x, y, w, h = self.parser.roi_undist_dict[camera_id]
-            image = image[y : y + h, x : x + w]
+            #x, y, w, h = self.parser.roi_undist_dict[camera_id]
+            #image = image[y : y + h, x : x + w]
 
         if self.patch_size is not None:
             # Random crop
@@ -417,8 +436,8 @@ class Dataset:
                 # Align depth_image and depths
                 aligned_depth_image = align_depths(depth_image, points, depths)
 
-                x, y, w, h = self.parser.roi_undist_dict[camera_id]
-                aligned_depth_image = aligned_depth_image[y : y + h, x : x + w]
+                #x, y, w, h = self.parser.roi_undist_dict[camera_id]
+                #aligned_depth_image = aligned_depth_image[y : y + h, x : x + w]
 
                 data["depth_image"] = aligned_depth_image
                 
