@@ -756,6 +756,101 @@ inline __device__ void fisheye_proj_vjp(
     v_mean3d.z += dL_dtz_raw;
 }
 
+inline __device__ void spherical_proj(
+    // inputs
+    const vec3 mean3d,
+    const mat3 cov3d,
+    const uint32_t width,
+    const uint32_t height,
+    // outputs
+    mat2 &cov2d,
+    vec2 &mean2d
+) {
+    float x = mean3d[0], y = mean3d[1], z = mean3d[2];
+
+    float r = sqrt(x * x + y * y + z * z + 1e-8f);
+
+    // Use same coordinate system as SphericalCameraModel
+    // φ (phi) = azimuth angle (around Y axis), range [-π, π]
+    // θ (theta) = polar angle (from Y axis), range [0, π]
+    float phi = atan2(x, z);                    // azimuth: [-π, π]
+    float theta = acos(clamp(y / r, -1.0f, 1.0f));  // polar: [0, π]
+    
+    // Convert to normalized coordinates [0, 1]
+    float u = (phi + M_PI) / (2.0f * M_PI);    // [0, 1] left to right
+    float v = theta / M_PI;                     // [0, 1] top to bottom
+    
+    // Convert to pixel coordinates
+    mean2d = vec2(u * width, v * height);
+
+    // Compute Jacobian for covariance transformation
+    float sin_theta = sqrt(1.0f - (y/r) * (y/r) + 1e-8f);  // sin(theta) = sin(acos(y/r))
+    float denom_xz = x * x + z * z + 1e-8f;
+    float denom_r = r + 1e-8f;
+    float denom_r2 = r * r + 1e-8f;
+    float denom_r_sin_theta = denom_r * sin_theta + 1e-8f;
+    
+    // Jacobian matrix: [3 rows (x,y,z) x 2 cols (u,v)]
+    mat3x2 J = mat3x2(
+        // du/dx, dv/dx
+        width / (2.0f * M_PI) * z / denom_xz,
+        -height / M_PI * (x * y) / (denom_r2 * sin_theta),
+        
+        // du/dy, dv/dy  
+        0.0f,
+        -height / M_PI / denom_r_sin_theta,
+        
+        // du/dz, dv/dz
+        width / (2.0f * M_PI) * (-x) / denom_xz,
+        -height / M_PI * (z * y) / (denom_r2 * sin_theta)
+    );
+
+    cov2d = J * cov3d * glm::transpose(J);
+}
+
+inline __device__ void spherical_proj_vjp(
+    // fwd inputs
+    const vec3 mean3d,
+    const mat3 cov3d,
+    const uint32_t width,
+    const uint32_t height,
+    // grad outputs
+    const mat2 v_cov2d,
+    const vec2 v_mean2d,
+    // grad inputs
+    vec3 &v_mean3d,
+    mat3 &v_cov3d
+) {
+    float x = mean3d[0];
+    float y = mean3d[1];
+    float z = mean3d[2];
+
+    float r = sqrt(x * x + y * y + z * z + 1e-8f);
+    float sin_theta = sqrt(1.0f - (y/r) * (y/r) + 1e-8f);
+    float denom_xz = x * x + z * z + 1e-8f;
+    float denom_r = r + 1e-8f;
+    float denom_r2 = r * r + 1e-8f;
+    float denom_r_sin_theta = denom_r * sin_theta + 1e-8f;
+    
+    // Same Jacobian as forward pass
+    mat3x2 J = mat3x2(
+        // du/dx, dv/dx
+        width / (2.0f * M_PI) * z / denom_xz,
+        -height / M_PI * (x * y) / (denom_r2 * sin_theta),
+        
+        // du/dy, dv/dy  
+        0.0f,
+        -height / M_PI / denom_r_sin_theta,
+        
+        // du/dz, dv/dz
+        width / (2.0f * M_PI) * (-x) / denom_xz,
+        -height / M_PI * (z * y) / (denom_r2 * sin_theta)
+    );
+    
+    v_mean3d += glm::transpose(J) * v_mean2d;
+    v_cov3d += glm::transpose(J) * v_cov2d * J;
+}
+
 inline __device__ vec3 safe_normalize(vec3 v) {
     const float l = v.x * v.x + v.y * v.y + v.z * v.z;
     return l > 0.0f ? (v * rsqrtf(l)) : v;

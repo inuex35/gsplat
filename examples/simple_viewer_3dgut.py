@@ -210,7 +210,7 @@ def main(local_rank: int, world_rank, world_size: int, args):
         "3DGUT (UT + Eval3D)", initial_value=False
     )
     gui_dropdown_camera_type = server.gui.add_dropdown(
-        "Camera Type", ("pinhole", "fisheye"), initial_value="pinhole"
+        "Camera Type", ("pinhole", "fisheye", "spherical"), initial_value="pinhole"
     )
     gui_slider_radial_coeffs1 = server.gui.add_slider(
         "radial coeffs: k1", min=-1.0, max=1.0, step=0.01, initial_value=0

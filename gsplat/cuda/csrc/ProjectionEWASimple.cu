@@ -59,6 +59,11 @@ __global__ void projection_ewa_simple_fwd_kernel(
             mean, covar, fx, fy, cx, cy, width, height, covar2d, mean2d
         );
         break;
+    case CameraModelType::SPHERICAL: // spherical projection
+        spherical_proj(
+            mean, covar, width, height, covar2d, mean2d
+        );
+        break;
     }
 
 // write to outputs: glm is column-major but we want row-major
@@ -210,6 +215,18 @@ __global__ void projection_ewa_simple_bwd_kernel(
             fy,
             cx,
             cy,
+            width,
+            height,
+            glm::transpose(v_covar2d),
+            v_mean2d,
+            v_mean,
+            v_covar
+        );
+        break;
+    case CameraModelType::SPHERICAL: // spherical projection
+        spherical_proj_vjp(
+            mean,
+            covar,
             width,
             height,
             glm::transpose(v_covar2d),

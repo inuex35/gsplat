@@ -164,6 +164,16 @@ __global__ void projection_ewa_3dgs_packed_fwd_kernel(
                 mean2d
             );
             break;
+        case CameraModelType::SPHERICAL: // spherical projection
+            spherical_proj(
+                mean_c,
+                covar_c,
+                image_width,
+                image_height,
+                covar2d,
+                mean2d
+            );
+            break;
         }
 
         det = add_blur(eps2d, covar2d, compensation);
@@ -531,6 +541,18 @@ __global__ void projection_ewa_3dgs_packed_bwd_kernel(
             fy,
             cx,
             cy,
+            image_width,
+            image_height,
+            v_covar2d,
+            glm::make_vec2(v_means2d),
+            v_mean_c,
+            v_covar_c
+        );
+        break;
+    case CameraModelType::SPHERICAL: // spherical projection
+        spherical_proj_vjp(
+            mean_c,
+            covar_c,
             image_width,
             image_height,
             v_covar2d,

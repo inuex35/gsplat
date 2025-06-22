@@ -52,7 +52,7 @@ def rasterization(
     rasterize_mode: Literal["classic", "antialiased"] = "classic",
     channel_chunk: int = 32,
     distributed: bool = False,
-    camera_model: Literal["pinhole", "ortho", "fisheye"] = "pinhole",
+    camera_model: Literal["pinhole", "ortho", "fisheye", "spherical"] = "pinhole",
     segmented: bool = False,
     covars: Optional[Tensor] = None,
     with_ut: bool = False,

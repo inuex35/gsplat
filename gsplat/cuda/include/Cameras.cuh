@@ -1044,6 +1044,86 @@ struct OpenCVFisheyeCameraModel
     }
 };
 
+struct SphericalCameraModel : BaseCameraModel<SphericalCameraModel> {
+    // Spherical camera model for 360-degree panoramic imaging
+    // Uses equirectangular projection: spherical coordinates mapped linearly to image
+
+    using Base = BaseCameraModel<SphericalCameraModel>;
+
+    struct Parameters : Base::Parameters {
+        // No additional parameters needed for basic spherical projection
+        // The projection is defined by the image resolution
+    };
+
+    __device__ SphericalCameraModel(Parameters const &parameters)
+        : parameters(parameters) {}
+
+    Parameters parameters;
+
+    inline __device__ auto camera_ray_to_image_point(
+        glm::fvec3 const &cam_ray, float margin_factor
+    ) const -> typename Base::ImagePointReturn {
+        auto image_point = glm::fvec2{0.f, 0.f};
+
+        // Normalize the camera ray
+        auto const ray_norm = length(cam_ray);
+        if (ray_norm <= 0.f) {
+            return {image_point, false};
+        }
+        auto const normalized_ray = cam_ray / ray_norm;
+
+        // Convert to spherical coordinates
+        // φ (phi) = azimuth angle (around Y axis), range [-π, π]
+        // θ (theta) = polar angle (from Z axis), range [0, π]
+        auto const phi = std::atan2(normalized_ray.x, normalized_ray.z);
+        auto const theta = std::acos(std::clamp(normalized_ray.y, -1.f, 1.f));
+
+        // Convert spherical coordinates to normalized image coordinates [0, 1]
+        auto const u = (phi + PI) / (2.f * PI);  // φ: [-π, π] → [0, 1]
+        auto const v = theta / PI;               // θ: [0, π] → [0, 1]
+
+        // Convert to pixel coordinates
+        image_point.x = u * parameters.resolution[0];
+        image_point.y = v * parameters.resolution[1];
+
+        // Check if the image points fall within the image bounds
+        auto valid = true;
+        valid &= image_point_in_image_bounds_margin(
+            image_point, parameters.resolution, margin_factor
+        );
+
+        return {image_point, valid};
+    }
+
+    inline __device__ CameraRay image_point_to_camera_ray(glm::fvec2 image_point
+    ) const {
+        // Convert pixel coordinates to normalized coordinates [0, 1]
+        auto const u = image_point.x / parameters.resolution[0];
+        auto const v = image_point.y / parameters.resolution[1];
+
+        // Convert normalized coordinates to spherical coordinates
+        auto const phi = u * 2.f * PI - PI;     // [0, 1] → [-π, π]
+        auto const theta = v * PI;              // [0, 1] → [0, π]
+
+        // Convert spherical coordinates to 3D direction vector
+        auto const sin_theta = std::sin(theta);
+        auto const cos_theta = std::cos(theta);
+        auto const sin_phi = std::sin(phi);
+        auto const cos_phi = std::cos(phi);
+
+        // Spherical to Cartesian conversion
+        // Note: We use Y-up coordinate system where Y is the polar axis
+        auto const camera_ray = glm::fvec3{
+            sin_theta * sin_phi,  // X
+            cos_theta,            // Y (polar axis)
+            sin_theta * cos_phi   // Z
+        };
+
+        // The ray is already normalized by construction
+        return {camera_ray, true};
+    }
+};
+
 // ---------------------------------------------------------------------------------------------
 
 // Gaussian projections

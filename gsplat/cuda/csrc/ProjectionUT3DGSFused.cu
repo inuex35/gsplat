@@ -130,8 +130,15 @@ __global__ void projection_ut_3dgs_fused_kernel(
         image_gaussian_return =
             world_gaussian_to_image_gaussian_unscented_transform_shutter_pose(
                 camera_model, rs_params, ut_params, mean, scale, quat);
-    } else {
-        // should never reach here
+    } else if (camera_model_type == CameraModelType::SPHERICAL) {
+        SphericalCameraModel::Parameters cm_params = {};
+        cm_params.resolution = {image_width, image_height};
+        cm_params.shutter_type = rs_type;
+        SphericalCameraModel camera_model(cm_params);
+        image_gaussian_return =
+            world_gaussian_to_image_gaussian_unscented_transform_shutter_pose(
+                camera_model, rs_params, ut_params, mean, scale, quat);
+    } else {        // should never reach here
         assert(false);
         return;
     }

@@ -247,6 +247,73 @@ def _ortho_proj(
     return means2d, cov2d  # [..., C, N, 2], [..., C, N, 2, 2]
 
 
+def _spherical_proj(
+    means: Tensor,  # [C, N, 3]
+    covars: Tensor,  # [C, N, 3, 3]
+    width: int,
+    height: int,
+) -> Tuple[Tensor, Tensor]:
+    """PyTorch implementation of spherical projection for 3D Gaussians.
+    Args:
+        means: Gaussian means in camera coordinate system. [C, N, 3].
+        covars: Gaussian covariances in camera coordinate system. [C, N, 3, 3].
+        width: Image width.
+        height: Image height.
+    Returns:
+        A tuple:
+        - **means2d**: Projected means. [C, N, 2].
+        - **cov2d**: Projected covariances. [C, N, 2, 2].
+    """
+    C, N, _ = means.shape
+    device = means.device
+    dtype = means.dtype
+
+    tx, ty, tz = torch.unbind(means, dim=-1)  # [C, N]
+    
+    r = torch.sqrt(tx**2 + ty**2 + tz**2 + 1e-8)
+    
+    # Use same coordinate system as SphericalCameraModel
+    # φ (phi) = azimuth angle (around Y axis), range [-π, π]
+    # θ (theta) = polar angle (from Y axis), range [0, π]
+    phi = torch.atan2(tx, tz)                     # azimuth: [-π, π]
+    theta = torch.acos(torch.clamp(ty / r, -1.0, 1.0))  # polar: [0, π]
+    
+    # Convert to normalized coordinates [0, 1]
+    u = (phi + torch.pi) / (2.0 * torch.pi)      # [0, 1] left to right
+    v = theta / torch.pi                          # [0, 1] top to bottom
+    
+    # Convert to pixel coordinates
+    means2d = torch.stack([
+        u * width,
+        v * height
+    ], dim=-1)  # [C, N, 2]
+    
+    # Compute Jacobian for covariance transformation
+    sin_theta = torch.sqrt(1.0 - (ty/r)**2 + 1e-8)  # sin(theta) = sin(acos(y/r))
+    denom_xz = tx**2 + tz**2 + 1e-8
+    denom_r = r + 1e-8
+    denom_r2 = r**2 + 1e-8
+    denom_r_sin_theta = denom_r * sin_theta + 1e-8
+    
+    # Jacobian matrix: [C, N, 2, 3]
+    J = torch.stack([
+        # du/dx, dv/dx
+        width / (2.0 * torch.pi) * tz / denom_xz,
+        -height / torch.pi * (tx * ty) / (denom_r2 * sin_theta),
+        
+        # du/dy, dv/dy
+        torch.zeros_like(tx),  # du/dy = 0
+        -height / torch.pi / denom_r_sin_theta,
+        
+        # du/dz, dv/dz
+        width / (2.0 * torch.pi) * (-tx) / denom_xz,
+        -height / torch.pi * (tz * ty) / (denom_r2 * sin_theta),
+    ], dim=-1).reshape(C, N, 2, 3)
+
+    cov2d = torch.einsum("...ij,...jk,...kl->...il", J, covars, J.transpose(-1, -2))
+    return means2d, cov2d  # [C, N, 2], [C, N, 2, 2]
+
+
 def _world_to_cam(
     means: Tensor,  # [..., N, 3]
     covars: Tensor,  # [..., N, 3, 3]
@@ -294,7 +361,7 @@ def _fully_fused_projection(
     near_plane: float = 0.01,
     far_plane: float = 1e10,
     calc_compensations: bool = False,
-    camera_model: Literal["pinhole", "ortho", "fisheye"] = "pinhole",
+    camera_model: Literal["pinhole", "ortho", "fisheye", "spherical"] = "pinhole",
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Optional[Tensor]]:
     """PyTorch implementation of `gsplat.cuda._wrapper.fully_fused_projection()`
 
@@ -319,6 +386,8 @@ def _fully_fused_projection(
         means2d, covars2d = _fisheye_proj(means_c, covars_c, Ks, width, height)
     elif camera_model == "pinhole":
         means2d, covars2d = _persp_proj(means_c, covars_c, Ks, width, height)
+    elif camera_model == "spherical":
+        means2d, covars2d = _spherical_proj(means_c, covars_c, width, height)
     else:
         assert_never(camera_model)
 
