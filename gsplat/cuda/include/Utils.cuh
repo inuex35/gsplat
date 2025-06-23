@@ -4,6 +4,7 @@
 
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
+#include <algorithm>  // for std::clamp
 
 namespace gsplat {
 
@@ -774,11 +775,11 @@ inline __device__ void spherical_proj(
     // φ (phi) = azimuth angle (around Y axis), range [-π, π]
     // θ (theta) = polar angle (from Y axis), range [0, π]
     float phi = atan2(x, z);                    // azimuth: [-π, π]
-    float theta = acos(clamp(y / r, -1.0f, 1.0f));  // polar: [0, π]
+    float theta = acos(fmaxf(-1.0f, fminf(1.0f, y / r)));  // polar: [0, π]
     
     // Convert to normalized coordinates [0, 1]
     float u = (phi + M_PI) / (2.0f * M_PI);    // [0, 1] left to right
-    float v = theta / M_PI;                     // [0, 1] top to bottom
+    float v = 1.0f - theta / M_PI;             // [1, 0] top to bottom (flip Y)
     
     // Convert to pixel coordinates
     mean2d = vec2(u * width, v * height);
@@ -791,18 +792,19 @@ inline __device__ void spherical_proj(
     float denom_r_sin_theta = denom_r * sin_theta + 1e-8f;
     
     // Jacobian matrix: [3 rows (x,y,z) x 2 cols (u,v)]
+    // Note: v = 1 - theta/π, so dv/dθ = -1/π (negative sign)
     mat3x2 J = mat3x2(
         // du/dx, dv/dx
         width / (2.0f * M_PI) * z / denom_xz,
-        -height / M_PI * (x * y) / (denom_r2 * sin_theta),
+        height / M_PI * (x * y) / (denom_r2 * sin_theta),  // flipped sign
         
         // du/dy, dv/dy  
         0.0f,
-        -height / M_PI / denom_r_sin_theta,
+        height / M_PI / denom_r_sin_theta,  // flipped sign
         
         // du/dz, dv/dz
         width / (2.0f * M_PI) * (-x) / denom_xz,
-        -height / M_PI * (z * y) / (denom_r2 * sin_theta)
+        height / M_PI * (z * y) / (denom_r2 * sin_theta)  // flipped sign
     );
 
     cov2d = J * cov3d * glm::transpose(J);
@@ -836,18 +838,18 @@ inline __device__ void spherical_proj_vjp(
     mat3x2 J = mat3x2(
         // du/dx, dv/dx
         width / (2.0f * M_PI) * z / denom_xz,
-        -height / M_PI * (x * y) / (denom_r2 * sin_theta),
+        height / M_PI * (x * y) / (denom_r2 * sin_theta),  // flipped sign
         
         // du/dy, dv/dy  
         0.0f,
-        -height / M_PI / denom_r_sin_theta,
+        height / M_PI / denom_r_sin_theta,  // flipped sign
         
         // du/dz, dv/dz
         width / (2.0f * M_PI) * (-x) / denom_xz,
-        -height / M_PI * (z * y) / (denom_r2 * sin_theta)
+        height / M_PI * (z * y) / (denom_r2 * sin_theta)  // flipped sign
     );
-    
     v_mean3d += glm::transpose(J) * v_mean2d;
+
     v_cov3d += glm::transpose(J) * v_cov2d * J;
 }
 

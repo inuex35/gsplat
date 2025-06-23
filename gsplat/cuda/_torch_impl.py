@@ -280,7 +280,7 @@ def _spherical_proj(
     
     # Convert to normalized coordinates [0, 1]
     u = (phi + torch.pi) / (2.0 * torch.pi)      # [0, 1] left to right
-    v = theta / torch.pi                          # [0, 1] top to bottom
+    v = 1.0 - theta / torch.pi                   # [1, 0] top to bottom (flip Y)
     
     # Convert to pixel coordinates
     means2d = torch.stack([
@@ -296,18 +296,19 @@ def _spherical_proj(
     denom_r_sin_theta = denom_r * sin_theta + 1e-8
     
     # Jacobian matrix: [C, N, 2, 3]
+    # Note: v = 1 - theta/π, so dv/dθ = -1/π (negative sign flips)
     J = torch.stack([
         # du/dx, dv/dx
         width / (2.0 * torch.pi) * tz / denom_xz,
-        -height / torch.pi * (tx * ty) / (denom_r2 * sin_theta),
+        height / torch.pi * (tx * ty) / (denom_r2 * sin_theta),  # flipped sign
         
         # du/dy, dv/dy
         torch.zeros_like(tx),  # du/dy = 0
-        -height / torch.pi / denom_r_sin_theta,
+        height / torch.pi / denom_r_sin_theta,  # flipped sign
         
         # du/dz, dv/dz
         width / (2.0 * torch.pi) * (-tx) / denom_xz,
-        -height / torch.pi * (tz * ty) / (denom_r2 * sin_theta),
+        height / torch.pi * (tz * ty) / (denom_r2 * sin_theta),  # flipped sign
     ], dim=-1).reshape(C, N, 2, 3)
 
     cov2d = torch.einsum("...ij,...jk,...kl->...il", J, covars, J.transpose(-1, -2))

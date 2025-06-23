@@ -1067,9 +1067,7 @@ struct SphericalCameraModel : BaseCameraModel<SphericalCameraModel> {
 
         // Normalize the camera ray
         auto const ray_norm = length(cam_ray);
-        if (ray_norm <= 0.f) {
-            return {image_point, false};
-        }
+        
         auto const normalized_ray = cam_ray / ray_norm;
 
         // Convert to spherical coordinates
@@ -1078,13 +1076,13 @@ struct SphericalCameraModel : BaseCameraModel<SphericalCameraModel> {
         auto const phi = std::atan2(normalized_ray.x, normalized_ray.z);
         auto const theta = std::acos(std::clamp(normalized_ray.y, -1.f, 1.f));
 
-        // Convert spherical coordinates to normalized image coordinates [0, 1]
-        auto const u = (phi + PI) / (2.f * PI);  // φ: [-π, π] → [0, 1]
-        auto const v = theta / PI;               // θ: [0, π] → [0, 1]
+        // Convert spherical coordinates to normalized image coordinates [-1, 1]
+        auto const u = phi / PI;                // φ: [-π, π] → [-1, 1]
+        auto const v = 1.0f - 2.0f * theta / PI; // θ: [0, π] → [1, -1] (flip Y for 3DGUT)
 
         // Convert to pixel coordinates
-        image_point.x = u * parameters.resolution[0];
-        image_point.y = v * parameters.resolution[1];
+        image_point.x = (u + 1.0f) * parameters.resolution[0] / 2.0f;
+        image_point.y = (v + 1.0f) * parameters.resolution[1] / 2.0f;
 
         // Check if the image points fall within the image bounds
         auto valid = true;
@@ -1097,13 +1095,13 @@ struct SphericalCameraModel : BaseCameraModel<SphericalCameraModel> {
 
     inline __device__ CameraRay image_point_to_camera_ray(glm::fvec2 image_point
     ) const {
-        // Convert pixel coordinates to normalized coordinates [0, 1]
-        auto const u = image_point.x / parameters.resolution[0];
-        auto const v = image_point.y / parameters.resolution[1];
+        // Convert pixel coordinates to normalized coordinates [-1, 1]
+        auto const u = 2.0f * image_point.x / parameters.resolution[0] - 1.0f;
+        auto const v = 2.0f * image_point.y / parameters.resolution[1] - 1.0f;
 
         // Convert normalized coordinates to spherical coordinates
-        auto const phi = u * 2.f * PI - PI;     // [0, 1] → [-π, π]
-        auto const theta = v * PI;              // [0, 1] → [0, π]
+        auto const phi = u * PI;                // [-1, 1] → [-π, π]
+        auto const theta = (1.0f - v) * PI / 2.0f; // [1, -1] → [0, π] (flip Y back)
 
         // Convert spherical coordinates to 3D direction vector
         auto const sin_theta = std::sin(theta);
